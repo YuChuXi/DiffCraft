@@ -1,54 +1,49 @@
-from torch import nn
+import torch
+import torch.nn as nn
+import math
 
-
-def adaptive_pad(x, target_ratio):
-    """动态填充至能被ratio整除"""
-    B, C, D, H, W = x.shape
-    pad_d = (target_ratio - D % target_ratio) % target_ratio
-    pad_h = (target_ratio - H % target_ratio) % target_ratio
-    pad_w = (target_ratio - W % target_ratio) % target_ratio
-    return nn.functional.pad(x, (0, pad_w, 0, pad_h, 0, pad_d))
-
-
-class VAEEncoder(nn.Module):
-    def __init__(self, in_dim, latent_dim=512, ratios=2):
+class VAEEncoder3D(nn.Module):
+    """3D VAE编码器"""
+    def __init__(self, in_channels, out_channels, R):
         super().__init__()
-        self.ratios = ratios
-        self.encoders = nn.ModuleDict(
-            {
-                f"x{ratio}": nn.Sequential(
-                    nn.Conv3d(in_dim, latent_dim // 4, 3, stride=2, padding=1),
-                    nn.GroupNorm(8, latent_dim // 4),
-                    nn.GELU(),
-                    nn.Conv3d(latent_dim // 4, latent_dim, 3, stride=2, padding=1),
-                )
-                for ratio in ratios
-            }
-        )
+        self.downsample_steps = int(math.log2(R))
+        layers = []
+        current_channels = in_channels
+        for _ in range(self.downsample_steps):
+            layers += [
+                nn.Conv3d(current_channels, current_channels*2, 
+                         kernel_size=3, stride=2, padding=1),
+                nn.ReLU()
+            ]
+            current_channels *= 2
+        layers.append(nn.Conv3d(current_channels, out_channels, kernel_size=3, padding=1))
+        self.net = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        # x: (B,X,Y,Z,C) -> (B,C,X,Y,Z)
+        x = x.permute(0,4,1,2,3)
+        x = self.net(x)
+        return x.permute(0,2,3,4,1)  # (B,X/R,Y/R,Z/R,out_channels)
 
-    def forward(self, x, ratio):
-        x = adaptive_pad(x, ratio)
-        return self.encoders[f"x{ratio}"](x)
-
-
-class VAEDecoder(nn.Module):
-    def __init__(self, latent_dim=512, out_dim=256, ratios=[2, 3, 4]):
+class VAEDecoder3D(nn.Module):
+    """3D VAE解码器"""
+    def __init__(self, in_channels, out_channels, R):
         super().__init__()
-        self.decoders = nn.ModuleDict(
-            {
-                f"x{ratio}": nn.Sequential(
-                    nn.ConvTranspose3d(
-                        latent_dim, latent_dim // 4, 3, stride=2, padding=1
-                    ),
-                    nn.GroupNorm(8, latent_dim // 4),
-                    nn.GELU(),
-                    nn.ConvTranspose3d(
-                        latent_dim // 4, out_dim, 3, stride=2, padding=1
-                    ),
-                )
-                for ratio in ratios
-            }
-        )
-
-    def forward(self, z, ratio):
-        return self.decoders[f"x{ratio}"](z)
+        self.upsample_steps = int(math.log2(R))
+        layers = []
+        current_channels = in_channels
+        for _ in range(self.upsample_steps):
+            layers += [
+                nn.ConvTranspose3d(current_channels, current_channels//2,
+                                  kernel_size=3, stride=2, padding=1, output_padding=1),
+                nn.ReLU()
+            ]
+            current_channels = current_channels // 2
+        layers.append(nn.Conv3d(current_channels, out_channels, kernel_size=3, padding=1))
+        self.net = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        # x: (B,X,Y,Z,C) -> (B,C,X,Y,Z)
+        x = x.permute(0,4,1,2,3)
+        x = self.net(x)
+        return x.permute(0,2,3,4,1)  # (B,X*R,Y*R,Z*R,out_channels) 

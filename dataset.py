@@ -75,7 +75,7 @@ class LitematicaDataset(Dataset):
                 + [i[: -len(SAVED)] for i in os.listdir("dataset") if i.endswith(SAVED)]
             )
         )
-        self.sample_map_list = {}
+        self.sample_map_dict = {}
 
         if (not cache_pth) and (not all_in_mem):
             return  # early exit!
@@ -91,7 +91,7 @@ class LitematicaDataset(Dataset):
                 map = self.load_litematic(f"dataraw/{s}{LITEMATIC}")
 
             if all_in_mem:
-                self.sample_map_list[s] = map
+                self.sample_map_dict[s] = map
             if cache_pth:
                 if SAVED == ".pth":
                     torch.save(map, f"dataset/{s}{SAVED}")
@@ -116,5 +116,23 @@ class LitematicaDataset(Dataset):
                     map[pos[0], pos[1], pos[2], i+1] = s
         return map
 
-
-
+    def __len__(self):
+        return len(self.sample_name_list)
+    
+    def __getitem__(self, idx):
+        if isinstance(idx, int):
+            name = self.sample_name_list[idx]
+        elif isinstance(idx, str):
+            name = idx
+        
+        if name in self.sample_map_dict:
+            return self.sample_map_dict[name]
+        
+        if not os.path.exists(f"dataset/{name}{SAVED}"):
+            raise FileNotFoundError(f"File {name}{SAVED} not found")
+        
+        if SAVED == ".pth":
+            return torch.load(f"dataset/{name}{SAVED}")
+        elif SAVED == ".npz":
+            return numpy.load(f"dataset/{name}{SAVED}")["map"]
+        

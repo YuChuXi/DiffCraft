@@ -1,101 +1,74 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class BlockEncoder(nn.Module):
-    def __init__(self, n_blocks, n_states, n_state_channels, embed_dim):
+    """
+    输入形状: (B, X, Y, Z, 1 + N_STATE)
+    输出形状: (B, X, Y, Z, E)
+    """
+    def __init__(self, n_blocks, n_states, N_STATE, E):
         super().__init__()
         self.n_blocks = n_blocks
         self.n_states = n_states
-        self.n_state_channels = n_state_channels
-        self.embed_dim = embed_dim
+        self.N_STATE = N_STATE
+        self.E = E
         
-        # Block type embedding
-        self.block_embed = nn.Embedding(n_blocks, embed_dim)
+        # 方块ID的嵌入层
+        self.block_embed = nn.Embedding(n_blocks, E)
+        # 状态标签的嵌入层（所有状态共享）
+        self.state_embed = nn.Embedding(n_states, E)
         
-        # State embeddings (one per state channel)
-        self.state_embeds = nn.ModuleList([
-            nn.Embedding(n_states, embed_dim) 
-            for _ in range(n_state_channels)
-        ])
-        
-        # Feature compression
-        self.compressor = nn.Conv3d(
-            embed_dim * (1 + n_state_channels), 
-            embed_dim, 
-            kernel_size=1
-        )
-
     def forward(self, x):
-        # x: (B,X,Y,Z,1+N_STATE)
+        # 拆分方块ID和状态标签
         block_ids = x[..., 0].long()  # (B,X,Y,Z)
-        state_ids = x[..., 1:].long()  # (B,X,Y,Z,N_STATE)
+        state_ids = x[..., 1:].long() # (B,X,Y,Z,N_STATE)
         
-        # Block embedding
+        # 方块ID嵌入
         block_emb = self.block_embed(block_ids)  # (B,X,Y,Z,E)
         
-        # State embeddings
-        state_embs = []
-        for i in range(self.n_state_channels):
-            emb = self.state_embeds[i](state_ids[..., i])  # (B,X,Y,Z,E)
-            state_embs.append(emb)
+        # 状态嵌入处理
+        state_weights = self.state_embed(state_ids)  # (B,X,Y,Z,N_STATE,E)
+        mask = (state_ids != 0).unsqueeze(-1)       # (B,X,Y,Z,N_STATE,1)
+        state_emb = (state_weights * mask).sum(dim=-2)  # (B,X,Y,Z,E)
         
-        # Concatenate all features
-        combined = torch.cat([block_emb] + state_embs, dim=-1)  # (B,X,Y,Z,E*(1+N))
-        combined = combined.permute(0,4,1,2,3)  # (B,C,X,Y,Z)
-        
-        # Compress to embed_dim
-        out = self.compressor(combined)  # (B,E,X,Y,Z)
-        return out.permute(0,2,3,4,1)  # (B,X,Y,Z,E)
+        # 合并嵌入
+        total_emb = block_emb + state_emb
+        return total_emb
 
 class BlockDecoder(nn.Module):
-    def __init__(self, n_blocks, n_states, n_state_channels, embed_dim):
+    """
+    输入形状: (B, X, Y, Z, E)
+    输出形状: (B, X, Y, Z, 1 + N_STATE)
+    """
+    def __init__(self, n_blocks, n_states, N_STATE, E):
         super().__init__()
         self.n_blocks = n_blocks
         self.n_states = n_states
-        self.n_state_channels = n_state_channels
-        self.embed_dim = embed_dim
+        self.N_STATE = N_STATE
         
-        # Feature decompression
-        self.decompressor = nn.Conv3d(
-            embed_dim,
-            embed_dim * (1 + n_state_channels),
-            kernel_size=1
-        )
+        # 方块ID预测层
+        self.block_decoder = nn.Linear(E, n_blocks)
+        # 状态标签预测层
+        self.state_decoder = nn.Linear(E, n_states)
         
-        # Prediction heads
-        self.block_head = nn.Linear(embed_dim, n_blocks)
-        self.state_heads = nn.ModuleList([
-            nn.Linear(embed_dim, n_states)
-            for _ in range(n_state_channels)
-        ])
-
-    def forward(self, x):
-        # x: (B,X,Y,Z,E)
-        B, X, Y, Z, E = x.shape
+    def forward(self, emb):
+        # 预测方块ID
+        block_logits = self.block_decoder(emb)  # (B,X,Y,Z,n_blocks)
+        block_ids = torch.argmax(block_logits, dim=-1)  # (B,X,Y,Z)
         
-        # Decompress features
-        x = x.permute(0,4,1,2,3)  # (B,E,X,Y,Z)
-        decompressed = self.decompressor(x)  # (B,E*(1+N),X,Y,Z)
-        decompressed = decompressed.permute(0,2,3,4,1)  # (B,X,Y,Z,E*(1+N))
-        decompressed = decompressed.view(B, X, Y, Z, 1+self.n_state_channels, E)
+        # 预测状态标签
+        state_logits = self.state_decoder(emb)  # (B,X,Y,Z,n_states)
+        state_weights = torch.tanh(state_logits)
         
-        # Split features
-        block_feats = decompressed[..., 0, :]  # (B,X,Y,Z,E)
-        state_feats = decompressed[..., 1:, :]  # (B,X,Y,Z,N,E)
+        # 生成状态标签 (B,X,Y,Z,N_STATE)
+        adjusted_scores = torch.where(state_weights > 0, state_weights, -torch.inf)
+        topk_values, topk_indices = torch.topk(adjusted_scores, k=self.N_STATE, dim=-1)
+        mask_valid = topk_values != -torch.inf
+        state_ids = topk_indices * mask_valid.long()
         
-        # Predict block types
-        block_logits = self.block_head(block_feats)  # (B,X,Y,Z,n_blocks)
-        
-        # Predict state values
-        state_logits = []
-        for i in range(self.n_state_channels):
-            logits = self.state_heads[i](state_feats[..., i, :])  # (B,X,Y,Z,n_states)
-            state_logits.append(logits)
-        
-        # Combine outputs
-        state_logits = torch.stack(state_logits, dim=-1)  # (B,X,Y,Z,n_states,N)
-        return torch.cat([
-            block_logits.unsqueeze(-1),
-            state_logits
-        ], dim=-1)  # (B,X,Y,Z,1+N,n_states)
+        # 合并结果
+        output = torch.cat([
+            block_ids.unsqueeze(-1), 
+            state_ids
+        ], dim=-1)  # (B,X,Y,Z,1+N_STATE)
+        return output
