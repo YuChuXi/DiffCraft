@@ -44,14 +44,14 @@ class ResidualBlock3D(nn.Module):
         )
 
     def forward(self, x, t_emb, text_emb):
-        print(
-            self.echo,
-            self.in_channels,
-            self.out_channels,
-            x.shape,
-            t_emb.shape,
-            text_emb.shape,
-        )
+        # print(
+        #     self.echo,
+        #     self.in_channels,
+        #     self.out_channels,
+        #     x.shape,
+        #     t_emb.shape,
+        #     text_emb.shape,
+        # )
         h = self.block(x)
         # 时间条件
         t_emb = self.time_mlp(t_emb).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)

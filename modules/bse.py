@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class BlockEncoder(nn.Module):
     """
@@ -52,23 +53,7 @@ class BlockDecoder(nn.Module):
         self.state_decoder = nn.Linear(E, n_states)
         
     def forward(self, emb):
-        # 预测方块ID
-        block_logits = self.block_decoder(emb)  # (B,X,Y,Z,n_blocks)
-        block_ids = torch.argmax(block_logits, dim=-1)  # (B,X,Y,Z)
-        
-        # 预测状态标签
-        state_logits = self.state_decoder(emb)  # (B,X,Y,Z,n_states)
-        state_weights = torch.tanh(state_logits)
-        
-        # 生成状态标签 (B,X,Y,Z,N_STATE)
-        adjusted_scores = torch.where(state_weights > 0, state_weights, -torch.inf)
-        topk_values, topk_indices = torch.topk(adjusted_scores, k=self.N_STATE, dim=-1)
-        mask_valid = topk_values != -torch.inf
-        state_ids = topk_indices * mask_valid
-        
-        # 合并结果
-        output = torch.cat([
-            block_ids.unsqueeze(-1), 
-            state_ids
-        ], dim=-1)  # (B,X,Y,Z,1+N_STATE)
-        return output
+        # 返回原始logits用于训练
+        block_logits = F.softmax(self.block_decoder(emb), dim=-1)  # (B,X,Y,Z,n_blocks)
+        state_logits = F.sigmoid(self.state_decoder(emb))  # (B,X,Y,Z,n_states)
+        return block_logits, state_logits
