@@ -20,7 +20,7 @@ blocks.remove("minecraft:air") # 确保air在第一个
 blocks = natsorted(list(blocks))
 blocks.insert(0, "minecraft:air")
 
-states = natsorted(list(states)) # 保留一个占位
+states = natsorted(list(states)) # 保留一个占位符
 states.insert(0, "none")
 
 with open("assets/blocks.txt", "w") as f:
