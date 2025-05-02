@@ -137,15 +137,15 @@ class DenoiseNet3D(nn.Module):
                 ]
                 if current_res in config.attention_resolutions:
                     layers.append(AttentionBlock3D(out_ch))
-                self.down_blocks.append(nn.Sequential(*layers))
+                self.down_blocks.append(nn.ModuleList(layers))
                 in_ch = out_ch
                 idx += 1
 
             # 下采样层（非最后阶段）
             if i != len(ch_mult) - 1:
                 self.down_blocks.append(
-                    nn.Sequential(
-                        nn.Conv3d(in_ch, in_ch, kernel_size=3, stride=2, padding=1)
+                    nn.ModuleList(
+                        [nn.Conv3d(in_ch, in_ch, kernel_size=3, stride=2, padding=1)]
                     )
                 )
                 idx += 1
@@ -180,21 +180,23 @@ class DenoiseNet3D(nn.Module):
                 ]
                 if is_attention:
                     layers.append(AttentionBlock3D(out_ch))
-                self.up_blocks.append(nn.Sequential(*layers))
+                self.up_blocks.append(nn.ModuleList(layers))
                 in_ch = out_ch
 
             # 上采样层（非最后阶段）
             if i != 0:
                 self.up_blocks.append(
-                    nn.Sequential(
-                        nn.ConvTranspose3d(
-                            in_ch,
-                            in_ch,
-                            kernel_size=3,
-                            stride=2,
-                            padding=1,
-                            output_padding=1,
-                        )
+                    nn.ModuleList(
+                        [
+                            nn.ConvTranspose3d(
+                                in_ch,
+                                in_ch,
+                                kernel_size=3,
+                                stride=2,
+                                padding=1,
+                                output_padding=1,
+                            )
+                        ]
                     )
                 )
 
@@ -220,37 +222,42 @@ class DenoiseNet3D(nn.Module):
         h = x.permute(0, 4, 1, 2, 3)
         h = self.input_conv(h)  # (B, model_channels, X, Y, Z)
 
-        # 存储跳跃连接
+        # 跳跃连接存储
         skips = [h]
 
-        # 下采样
-        for block in self.down_blocks:
-            h = (
-                block[0](h, t_emb, c_emb)
-                if isinstance(block[0], ResidualBlock3D)
-                else block(h)
-            )
+        # 下采样过程
+        for block_group in self.down_blocks:
+            for layer in block_group:
+                if isinstance(layer, ResidualBlock3D):
+                    h = layer(h, t_emb, c_emb)
+                elif isinstance(layer, AttentionBlock3D):
+                    h = layer(h)
+                else:
+                    h = layer(h)
             skips.append(h)
 
-        # 中间块
+        # 中间块处理
         for block in self.mid_blocks:
-            h = (
-                block(h, t_emb, c_emb)
-                if isinstance(block, ResidualBlock3D)
-                else block(h)
-            )
-
-        # 上采样
-        for block in self.up_blocks:
-            if isinstance(block[0], ResidualBlock3D):
-                skip = skips.pop()
-                # 对齐空间维度
-                if h.shape[2:] != skip.shape[2:]:
-                    h = F.interpolate(h, size=skip.shape[2:], mode="nearest")
-                h = torch.cat([h, skip], dim=1)
+            if isinstance(block, ResidualBlock3D):
                 h = block(h, t_emb, c_emb)
             else:
                 h = block(h)
+
+        # 上采样过程
+        for block_group in self.up_blocks:
+            for layer in block_group:
+                if isinstance(layer, ResidualBlock3D):
+                    # 跳跃连接融合
+                    skip = skips.pop()
+                    # 维度对齐
+                    if h.shape[2:] != skip.shape[2:]:
+                        h = F.interpolate(h, size=skip.shape[2:], mode="nearest")
+                    h = torch.cat([h, skip], dim=1)
+                    h = layer(h, t_emb, c_emb)
+                elif isinstance(layer, AttentionBlock3D):
+                    h = layer(h)
+                else:
+                    h = layer(h)
 
         # 输出 (B, E, X, Y, Z) -> (B, X, Y, Z, E)
         return self.out_conv(h).permute(0, 2, 3, 4, 1)

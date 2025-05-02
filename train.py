@@ -12,7 +12,7 @@ def train_step(model, batch, optimizer, device):
     B = x.shape[0]
     
     # 生成随机时间步
-    t = torch.randint(0, 1000, (B,), device=device).long()
+    t = torch.randint(0, 1000, (B,), device=device)
     
     # 前向传播
     pred = model(x, t)

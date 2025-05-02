@@ -64,7 +64,7 @@ class BlockDecoder(nn.Module):
         adjusted_scores = torch.where(state_weights > 0, state_weights, -torch.inf)
         topk_values, topk_indices = torch.topk(adjusted_scores, k=self.N_STATE, dim=-1)
         mask_valid = topk_values != -torch.inf
-        state_ids = topk_indices * mask_valid.long()
+        state_ids = topk_indices * mask_valid
         
         # 合并结果
         output = torch.cat([
