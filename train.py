@@ -44,7 +44,7 @@ if __name__ == "__main__":
     # 模型
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = DiffCraft(config).to(device)
-    
+    print(model)
     # 优化器
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     

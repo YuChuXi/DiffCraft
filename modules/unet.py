@@ -22,25 +22,36 @@ class SinusoidalPositionEmbeddings(nn.Module):
 class ResidualBlock3D(nn.Module):
     """带有条件嵌入的3D残差块"""
 
-    def __init__(self, in_c, out_c, time_emb_dim, text_emb_dim, echo=""):
+    def __init__(self, in_channels, out_channels, time_emb_dim, text_emb_dim, echo=""):
         super().__init__()
-        self.in_c = in_c
-        self.out_c = out_c
+        self.in_channels = in_channels
+        self.out_channels = out_channels
         self.echo = echo
-        self.time_mlp = nn.Linear(time_emb_dim, out_c)
-        self.text_mlp = nn.Linear(text_emb_dim, out_c)
+        self.time_mlp = nn.Linear(time_emb_dim, out_channels)
+        self.text_mlp = nn.Linear(text_emb_dim, out_channels)
         self.block = nn.Sequential(
-            nn.GroupNorm(32, in_c),
+            nn.GroupNorm(32, in_channels),
             nn.SiLU(),
-            nn.Conv3d(in_c, out_c, 3, padding=1),
-            nn.GroupNorm(32, out_c),
+            nn.Conv3d(in_channels, out_channels, 3, padding=1),
+            nn.GroupNorm(32, out_channels),
             nn.SiLU(),
-            nn.Conv3d(out_c, out_c, 3, padding=1),
+            nn.Conv3d(out_channels, out_channels, 3, padding=1),
         )
-        self.res_conv = nn.Conv3d(in_c, out_c, 1) if in_c != out_c else nn.Identity()
+        self.res_conv = (
+            nn.Conv3d(in_channels, out_channels, 1)
+            if in_channels != out_channels
+            else nn.Identity()
+        )
 
     def forward(self, x, t_emb, text_emb):
-        print(self.echo, self.in_c, self.out_c, x.shape, t_emb.shape, text_emb.shape)
+        print(
+            self.echo,
+            self.in_channels,
+            self.out_channels,
+            x.shape,
+            t_emb.shape,
+            text_emb.shape,
+        )
         h = self.block(x)
         # 时间条件
         t_emb = self.time_mlp(t_emb).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
@@ -68,11 +79,12 @@ class AttentionBlock3D(nn.Module):
 
 
 class DenoiseNet3D(nn.Module):
-    """3D去噪网络"""
+    """3D去噪网络（修正维度版本）"""
 
     def __init__(self, config):
         super().__init__()
         self.config = config
+
         # 时间嵌入
         self.time_embed = nn.Sequential(
             SinusoidalPositionEmbeddings(config.model_channels),
@@ -82,143 +94,163 @@ class DenoiseNet3D(nn.Module):
         )
 
         # 文本嵌入
-        self.text_embed = nn.Linear(config.text_emb_dim, config.model_channels)
+        self.text_proj = (
+            nn.Linear(config.text_emb_dim, config.model_channels)
+            if config.text_emb_dim
+            else None
+        )
 
-        # 输入层
-        self.input_conv = nn.Conv3d(config.E, config.model_channels, 3, padding=1)
+        # 输入层 (B, C, X, Y, Z)
+        self.input_conv = nn.Conv3d(
+            config.E, config.model_channels, kernel_size=3, padding=1
+        )
 
-        # 下采样
+        # 下采样路径
         self.down_blocks = nn.ModuleList()
-        current_res = 1
-        current_ch = config.model_channels
         ch_mult = config.channel_mult
+        current_res = 1
+        in_ch = config.model_channels
+
+        # 预计算各阶段通道数
+        channels = [config.model_channels]
         for i, mult in enumerate(ch_mult):
+            out_ch = mult * config.model_channels
+            for _ in range(config.num_res_blocks):
+                channels.append(out_ch)
+            if i != len(ch_mult) - 1:
+                channels.append(out_ch)  # 下采样层
+                current_res *= 2
+
+        # 构建下采样
+        idx = 0
+        for i, mult in enumerate(ch_mult):
+            out_ch = mult * config.model_channels
             for _ in range(config.num_res_blocks):
                 layers = [
                     ResidualBlock3D(
-                        current_ch,
-                        mult * config.model_channels,
-                        config.model_channels,
-                        config.model_channels,
-                        f"D{i}x{mult}x{_}",
+                        in_channels=in_ch,
+                        out_channels=out_ch,
+                        text_emb_dim=config.model_channels,
+                        time_emb_dim=config.model_channels,
+                        echo=f"D{i}_res{_}",
                     )
                 ]
                 if current_res in config.attention_resolutions:
-                    layers.append(AttentionBlock3D(mult * config.model_channels))
-                self.down_blocks.append(nn.ModuleList(layers))
-                current_ch = mult * config.model_channels
+                    layers.append(AttentionBlock3D(out_ch))
+                self.down_blocks.append(nn.Sequential(*layers))
+                in_ch = out_ch
+                idx += 1
+
+            # 下采样层（非最后阶段）
             if i != len(ch_mult) - 1:
                 self.down_blocks.append(
-                    nn.ModuleList(
-                        [nn.Conv3d(current_ch, current_ch, 3, stride=2, padding=1)]
+                    nn.Sequential(
+                        nn.Conv3d(in_ch, in_ch, kernel_size=3, stride=2, padding=1)
                     )
                 )
-                current_res *= 2
+                idx += 1
 
         # 中间块
         self.mid_blocks = nn.ModuleList(
             [
                 ResidualBlock3D(
-                    current_ch,
-                    current_ch,
-                    config.model_channels,
-                    config.model_channels,
-                    "M1",
+                    in_ch, in_ch, config.model_channels, config.model_channels, "mid1"
                 ),
-                AttentionBlock3D(current_ch),
+                AttentionBlock3D(in_ch),
                 ResidualBlock3D(
-                    current_ch,
-                    current_ch,
-                    config.model_channels,
-                    config.model_channels,
-                    "M2",
+                    in_ch, in_ch, config.model_channels, config.model_channels, "mid2"
                 ),
             ]
         )
 
-        # 上采样
+        # 上采样路径
         self.up_blocks = nn.ModuleList()
         for i, mult in reversed(list(enumerate(ch_mult))):
-            for j in range(config.num_res_blocks + 1):
+            out_ch = mult * config.model_channels
+            for _ in range(config.num_res_blocks + 1):  # +1用于跳跃连接
+                is_attention = current_res in config.attention_resolutions
                 layers = [
                     ResidualBlock3D(
-                        current_ch + (mult * config.model_channels if j == 0 else 0),
-                        mult * config.model_channels,
-                        config.model_channels,
-                        config.model_channels,
-                        f"U{i}x{mult}x{j}",
+                        in_channels=in_ch + channels.pop(),  # 跳跃连接
+                        out_channels=out_ch,
+                        text_emb_dim=config.model_channels,
+                        time_emb_dim=config.model_channels,
+                        echo=f"U{i}_res{_}",
                     )
                 ]
-                if current_res in config.attention_resolutions:
-                    layers.append(AttentionBlock3D(mult * config.model_channels))
-                self.up_blocks.append(nn.ModuleList(layers))
-                current_ch = mult * config.model_channels
+                if is_attention:
+                    layers.append(AttentionBlock3D(out_ch))
+                self.up_blocks.append(nn.Sequential(*layers))
+                in_ch = out_ch
+
+            # 上采样层（非最后阶段）
             if i != 0:
                 self.up_blocks.append(
-                    nn.ModuleList(
-                        [
-                            nn.ConvTranspose3d(
-                                current_ch,
-                                current_ch,
-                                3,
-                                stride=2,
-                                padding=1,
-                                output_padding=1,
-                            )
-                        ]
+                    nn.Sequential(
+                        nn.ConvTranspose3d(
+                            in_ch,
+                            in_ch,
+                            kernel_size=3,
+                            stride=2,
+                            padding=1,
+                            output_padding=1,
+                        )
                     )
                 )
-                current_res //= 2
 
         # 输出层
-        self.out_conv = nn.Conv3d(config.model_channels, config.E, 3, padding=1)
-
-    def forward(self, x, timesteps, text_emb=None):
-        # 时间条件
-        t_emb = self.time_embed(timesteps)
-        # 文本条件
-        c_emb = (
-            self.text_embed(text_emb)
-            if text_emb is not None
-            else torch.zeros(x.shape[0], self.config.model_channels, device=x.device)
+        self.out_conv = nn.Conv3d(
+            config.model_channels, config.E, kernel_size=3, padding=1
         )
 
-        # 输入转换
-        h = x.permute(0, 4, 1, 2, 3)  # (B,C,X,Y,Z)
-        h = self.input_conv(h)
+    def forward(self, x, timesteps, text_emb=None):
+        B, X, Y, Z, E = x.shape
 
-        # 存储中间结果
-        hs = [h]
+        # 时间条件
+        t_emb = self.time_embed(timesteps)  # (B, model_channels)
+
+        # 文本条件
+        c_emb = (
+            self.text_proj(text_emb)
+            if text_emb
+            else torch.zeros(x.shape[0], self.config.model_channels, device=x.device)
+        )  # (B, model_channels)
+
+        # 输入转换 (B, E, X, Y, Z)
+        h = x.permute(0, 4, 1, 2, 3)
+        h = self.input_conv(h)  # (B, model_channels, X, Y, Z)
+
+        # 存储跳跃连接
+        skips = [h]
 
         # 下采样
-        for layers in self.down_blocks:
-            for layer in layers:
-                if isinstance(layer, ResidualBlock3D):
-                    h = layer(h, t_emb, c_emb)
-                elif isinstance(layer, AttentionBlock3D):
-                    h = layer(h)
-                else:
-                    h = layer(h)
-            hs.append(h)
+        for block in self.down_blocks:
+            h = (
+                block[0](h, t_emb, c_emb)
+                if isinstance(block[0], ResidualBlock3D)
+                else block(h)
+            )
+            skips.append(h)
 
         # 中间块
-        for layer in self.mid_blocks:
-            if isinstance(layer, ResidualBlock3D):
-                h = layer(h, t_emb, c_emb)
-            else:
-                h = layer(h)
+        for block in self.mid_blocks:
+            h = (
+                block(h, t_emb, c_emb)
+                if isinstance(block, ResidualBlock3D)
+                else block(h)
+            )
 
         # 上采样
-        for layers in self.up_blocks:
-            for layer in layers:
-                if isinstance(layer, ResidualBlock3D):
-                    h = torch.cat([h, hs.pop()], dim=1)
-                    h = layer(h, t_emb, c_emb)
-                elif isinstance(layer, AttentionBlock3D):
-                    h = layer(h)
-                else:
-                    h = layer(h)
+        for block in self.up_blocks:
+            if isinstance(block[0], ResidualBlock3D):
+                skip = skips.pop()
+                # 对齐空间维度
+                if h.shape[2:] != skip.shape[2:]:
+                    h = F.interpolate(h, size=skip.shape[2:], mode="nearest")
+                h = torch.cat([h, skip], dim=1)
+                h = block(h, t_emb, c_emb)
+            else:
+                h = block(h)
 
-        # 输出
-        h = self.out_conv(h).permute(0, 2, 3, 4, 1)
-        return h
+        # 输出 (B, E, X, Y, Z) -> (B, X, Y, Z, E)
+        return self.out_conv(h).permute(0, 2, 3, 4, 1)
