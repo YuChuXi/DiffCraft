@@ -126,13 +126,18 @@ class LitematicaDataset(Dataset):
             name = idx
         
         if name in self.sample_map_dict:
-            return self.sample_map_dict[name]
+            data = self.sample_map_dict[name]
+        else:
+            if not os.path.exists(f"dataset/{name}{SAVED}"):
+                raise FileNotFoundError(f"File {name}{SAVED} not found")
+            
+            if SAVED == ".pth":
+                data = torch.load(f"dataset/{name}{SAVED}")
+            elif SAVED == ".npz":
+                data = numpy.load(f"dataset/{name}{SAVED}")["map"]
         
-        if not os.path.exists(f"dataset/{name}{SAVED}"):
-            raise FileNotFoundError(f"File {name}{SAVED} not found")
-        
-        if SAVED == ".pth":
-            return torch.load(f"dataset/{name}{SAVED}")
-        elif SAVED == ".npz":
-            return numpy.load(f"dataset/{name}{SAVED}")["map"]
-        
+        # 返回数据及原始形状信息
+        return {
+            "voxel": data,
+            "original_shape": torch.tensor(data.shape[:3])  # (X,Y,Z)
+        }

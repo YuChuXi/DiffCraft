@@ -99,6 +99,15 @@ class DenoiseNet3D(nn.Module):
             if config.text_emb_dim
             else None
         )
+        
+        # 区域大小嵌入（共享编码器和堆叠MLP）
+        self.region_embed = SinusoidalPositionEmbeddings(config.model_channels)
+        # 堆叠三个方向的MLP权重（input_dim, 3*output_dim）
+        self.region_mlp = nn.Linear(config.model_channels, 3*config.model_channels)
+        self.region_proj = nn.Linear(config.model_channels, config.model_channels)
+        
+        # 区域大小嵌入
+        
 
         # 输入层 (B, C, X, Y, Z)
         self.input_conv = nn.Conv3d(
@@ -205,18 +214,32 @@ class DenoiseNet3D(nn.Module):
             config.model_channels, config.E, kernel_size=3, padding=1
         )
 
-    def forward(self, x, timesteps, text_emb=None):
+    def forward(self, x, timesteps, text_emb=None, original_shapes=None):
         B, X, Y, Z, E = x.shape
 
         # 时间条件
         t_emb = self.time_embed(timesteps)  # (B, model_channels)
 
-        # 文本条件
-        c_emb = (
-            self.text_proj(text_emb)
-            if text_emb
-            else torch.zeros(x.shape[0], self.config.model_channels, device=x.device)
-        )  # (B, model_channels)
+        # 区域大小嵌入（批量处理XYZ）
+        if original_shapes is not None:
+            # 获取并拼接三个方向的尺寸 (B,3) -> (3B,)
+            regions = original_shapes.view(-1).float()  # (3B,)
+            
+            # 批量处理所有尺寸 (3B, C) -> (3B, 3C)
+            region_embs = self.region_mlp(self.region_embed(regions))  # (3B, 3C)
+            
+            # 重组为三个方向并求和 (B, 3C)
+            region_embs = region_embs.view(B, 3, -1).sum(dim=1)  # (B, 3C)
+            region_emb = self.region_proj(region_embs)  # (B, C)
+        else:
+            region_emb = torch.zeros(B, self.config.model_channels, device=x.device)
+
+        # 合并文本和区域条件
+        text_region_emb = region_emb
+        if text_emb is not None and self.text_proj is not None:
+            text_region_emb += self.text_proj(text_emb)
+        
+        c_emb = text_region_emb  # (B, model_channels)
 
         # 输入转换 (B, E, X, Y, Z)
         h = x.permute(0, 4, 1, 2, 3)

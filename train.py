@@ -56,14 +56,18 @@ def custom_loss(ns, n):
 def train_step(config:Config, model: DiffCraft, batch, optimizer, device):
     model.train()
     # 准备数据
-    x = batch.to(device).long()  # (B,X,Y,Z,1+max_n_state)
-    B = x.shape[0]
+    voxel = batch["voxel"].to(device).long()
+    original_shapes = batch["original_shape"].to(device)
+    B = voxel.shape[0]
 
     # 生成随机时间步 (扩散步数)
     t = torch.randint(0, config.num_diffusion_steps, (B,), device=device)
 
     # 前向传播并计算三条路径的联合损失
-    loss_dict = model.compute_loss(x, t) 
+    loss_dict = model.compute_loss(
+        {"voxel": voxel, "original_shape": original_shapes, "mask": batch["mask"].to(device)}, 
+        t
+    )
     
     # 反向传播
     optimizer.zero_grad()
@@ -79,8 +83,50 @@ if __name__ == "__main__":
     config.use_vae = False  # 初始训练不使用VAE
 
     # 数据集
+    def collate_fn(batch):
+        """动态padding并保留原始形状信息"""
+        # 收集原始形状
+        original_shapes = torch.stack([item["original_shape"] for item in batch])
+        
+        # 计算各维度最大值
+        max_dims = torch.max(original_shapes, dim=0)[0]
+        max_x, max_y, max_z = max_dims.tolist()
+        
+        # 初始化padded张量
+        padded_batch = []
+        masks = []
+        
+        for item in batch:
+            voxel = item["voxel"]
+            x, y, z = voxel.shape[:3]
+            
+            # 计算padding尺寸
+            pad_x = max_x - x
+            pad_y = max_y - y
+            pad_z = max_z - z
+            
+            # 进行padding (只padding空间维度，不padding状态维度)
+            padded = F.pad(voxel, (0,0, 0,pad_z, 0,pad_y, 0,pad_x))
+            padded_batch.append(padded)
+            
+            # 创建mask (1表示有效区域，0表示padding)
+            mask = torch.ones((x, y, z), dtype=torch.bool)
+            mask = F.pad(mask, (0,pad_z, 0,pad_y, 0,pad_x), value=False)
+            masks.append(mask)
+            
+        return {
+            "voxel": torch.stack(padded_batch),
+            "original_shape": original_shapes,
+            "mask": torch.stack(masks)
+        }
+    
     dataset = LitematicaDataset()
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=4,  # 可以适当增大batch size
+        shuffle=True,
+        collate_fn=collate_fn
+    )
 
     # 模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

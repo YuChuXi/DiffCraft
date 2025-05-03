@@ -52,20 +52,22 @@ class DiffCraft(nn.Module):
         x_noisy = sqrt_alpha_cumprod * x_start + sqrt_one_minus_alpha_cumprod * noise
         return x_noisy, noise
 
-    def compute_loss(self, x, t, text_emb=None):
+    def compute_loss(self, x, t, text_emb=None, original_shapes=None):
         """计算三条路径的联合损失"""
         # 路径1: 体素重建路径
         emb = self.block_encoder(x)
         x_pred = self.block_decoder(emb)
-        recon_loss = F.mse_loss(x_pred, x)
+        # 应用mask过滤padding部分
+        mask = x["mask"].unsqueeze(-1)  # (B,X,Y,Z,1)
+        recon_loss = F.mse_loss(x_pred[mask], x["voxel"][mask])
 
         # 路径2: VAE重建路径
         if self.use_vae:
             latent = self.vae_encoder(emb)
             pred_emb = self.vae_decoder(latent)
-            vae_loss = F.mse_loss(pred_emb, emb)
+            vae_loss = F.mse_loss(pred_emb[mask], emb[mask])
         else:
-            vae_loss = torch.tensor(0.0, device=x.device)
+            vae_loss = torch.tensor(0.0, device=x["voxel"].device)
 
         # 路径3: 扩散去噪路径
         if self.use_vae:
@@ -74,7 +76,12 @@ class DiffCraft(nn.Module):
             clean_latent = emb.detach()
             
         noisy_latent, noise = self.add_noise(clean_latent, t)
-        pred_noise = self.denoise_net(noisy_latent, t, text_emb)
+        pred_noise = self.denoise_net(
+            noisy_latent, 
+            t, 
+            text_emb=text_emb,
+            original_shapes=x["original_shape"]
+        )
         noise_loss = F.mse_loss(pred_noise, noise)
 
         return {
