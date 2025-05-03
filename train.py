@@ -53,57 +53,24 @@ def custom_loss(ns, n):
     return loss
 
 
-def train_step(model: DiffCraft, batch, optimizer, device):
+def train_step(config:Config, model: DiffCraft, batch, optimizer, device):
     model.train()
     # 准备数据
     x = batch.to(device).long()  # (B,X,Y,Z,1+max_n_state)
     B = x.shape[0]
 
-    # 生成随机时间步
-    t = torch.randint(0, 1000, (B,), device=device)
+    # 生成随机时间步 (扩散步数)
+    t = torch.randint(0, config.num_diffusion_steps, (B,), device=device)
 
-    # 前向传播
-    block_logits, state_logits = model(x, t, skip_unet=True)
-    # 方块ID交叉熵损失（需要将目标展平）
-    block_loss = F.cross_entropy(
-        block_logits.permute(0, 4, 1, 2, 3),  # 将类别维度放在第1位 (B,n_blocks,X,Y,Z)
-        x[..., 0].long(),  # 目标需要是Long类型 (B,X,Y,Z)
-    )
-    # print(x[...,0])
-    # from matplotlib import pyplot as plt
-    # import numpy as np
-    # # 可视化方块ID
-    # plt.matshow(x[0,::,2,::, 0].cpu().numpy())
-    # plt.show()
-    # exit()
-
-    # new_weights = model.block_decoder.block_decoder.weight.cpu().detach().numpy()
-
-    # # 更新图像数据
-    # im.set_data(new_weights)
-    # im.set_clim(vmin=np.min(new_weights), vmax=np.max(new_weights))
-
-    # # 刷新画布
-    # plt.draw()
-    # plt.pause(0.001)
-
-    # 状态标签二元交叉熵
-    state_loss = custom_loss(state_logits, x[..., 1:])  # (B,X,Y,Z,n_states)
-    total_loss = block_loss + state_loss
-
-    block_accuracy = (block_logits.argmax(dim=-1) == x[..., 0].long()).float().mean()
-
+    # 前向传播并计算三条路径的联合损失
+    loss_dict = model.compute_loss(x, t) 
+    
     # 反向传播
     optimizer.zero_grad()
-    total_loss.backward()
+    loss_dict["total"].backward()
     optimizer.step()
 
-    return {
-        "block_loss": block_loss.item(),
-        "state_loss": state_loss.item(),
-        "total_loss": total_loss.item(),
-        "block_accuracy": block_accuracy.item(),
-    }
+    return {k: v.item() for k, v in loss_dict.items()}
 
 
 if __name__ == "__main__":
@@ -147,8 +114,6 @@ if __name__ == "__main__":
     # 训练循环
     for epoch in tqdm.trange(10000):
         for batch in dataloader:
-            loss_dict = train_step(model, batch, optimizer, device)
-            
             if config.lr_schedule == "cos":
                 # 余弦退火学习率调度
                 lr = (math.cos(math.pi * epoch / 10000) * 0.5 + 0.5)*(config.init_lr - config.final_lr) + config.final_lr
@@ -164,13 +129,14 @@ if __name__ == "__main__":
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
+            loss_dict = train_step(config, model, batch, optimizer, device)
             wandb.log(
                 {
                     "block_loss": loss_dict["block_loss"],
                     "state_loss": loss_dict["state_loss"],
                     "total_loss": loss_dict["total_loss"],
                     "block_accuracy": loss_dict["block_accuracy"],
-                    "learning_rate": lr * 1e-4,
+                    "learning_rate": lr,
                 }
             )
 
