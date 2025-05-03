@@ -6,7 +6,7 @@ class Config:
         self.n_blocks = 1535       # 方块ID的种类数
         self.n_states = 511       # 每个方块状态标签的种类数
         self.max_n_state = 7          # 每个方块的最大状态标签数
-        self.E = 128               # 嵌入维度
+        self.E = 64               # 嵌入维度
         
         # VAE 参数
         self.use_vae = False      # 是否使用VAE
@@ -20,3 +20,10 @@ class Config:
         self.channel_mult = (1, 2, 2, 4)        # 各阶段通道倍增系数
         self.num_heads = 4                   # 注意力头数
         self.text_emb_dim = 768               # 文本嵌入维度
+        
+        # 训练参数
+        self.optimizer = "adamw"  # 优化器类型
+        self.init_lr = 1e-4        # 初始学习率
+        self.final_lr = 1e-5        # 最终学习率
+        self.lr_schedule = "cos"  # 学习率调度器类型
+        self.weight_decay = 1e-5  # 权重衰减

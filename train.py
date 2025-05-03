@@ -118,17 +118,26 @@ if __name__ == "__main__":
     # 模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = DiffCraft(config).to(device)
-    # print(model)
+    
     print(
         f"Model Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M"
     )
+    
     # 优化器
-    #optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-    optimizer = Atiny.Atiny(
-        model.parameters(),
-        lr=1e-4,
-        weight_decay=1e-5,
-    )
+    if config.optimizer == "adamw":
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=config.init_lr, weight_decay=config.weight_decay
+        )
+    elif config.optimizer == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=config.init_lr, weight_decay=config.weight_decay
+        )
+    elif config.optimizer == "atiny":
+        optimizer = Atiny.Atiny(
+            model.parameters(),
+            lr=config.init_lr,
+            weight_decay=config.weight_decay,
+        )
 
     wandb.init(
         project="DiffCraft",
@@ -139,9 +148,21 @@ if __name__ == "__main__":
     for epoch in tqdm.trange(10000):
         for batch in dataloader:
             loss_dict = train_step(model, batch, optimizer, device)
-            lr = math.cos(math.pi * epoch / 10000) * 0.5 + 0.5
+            
+            if config.lr_schedule == "cos":
+                # 余弦退火学习率调度
+                lr = (math.cos(math.pi * epoch / 10000) * 0.5 + 0.5)*(config.init_lr - config.final_lr) + config.final_lr
+            elif config.lr_schedule == "linear":
+                # 线性学习率调度
+                lr = (1 - epoch / 10000) * (config.init_lr - config.final_lr) + config.final_lr
+            elif config.lr_schedule == "exp":
+                # 指数衰减学习率调度
+                lr = config.init_lr * (config.final_lr / config.init_lr) ** (epoch / 10000)
+            else:
+                lr = config.init_lr    
+                        
             for param_group in optimizer.param_groups:
-                param_group["lr"] = lr * 1e-4
+                param_group["lr"] = lr
 
             wandb.log(
                 {

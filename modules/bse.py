@@ -41,17 +41,30 @@ class BlockDecoder(nn.Module):
     输入形状: (B, X, Y, Z, E)
     输出形状: (B, X, Y, Z, 1 + max_n_state)
     """
-    def __init__(self, n_blocks, n_states, max_n_state, E):
+    def __init__(self, n_blocks, n_states, max_n_state, E, big = False):
         super().__init__()
         self.n_blocks = n_blocks
         self.n_states = n_states
         self.max_n_state = max_n_state
         
-        # 方块ID预测层
-        self.block_decoder = nn.Linear(E, n_blocks)
-        # 状态标签预测层
-        self.state_decoder = nn.Linear(E, n_states)
-        
+        if big:
+            # 方块ID预测层
+            self.block_decoder = nn.Sequential(
+                nn.Linear(E, 512),
+                nn.ReLU(),
+                nn.Linear(512, n_blocks)
+            )
+            # 状态标签预测层
+            self.state_decoder = nn.Sequential(
+                nn.Linear(E, 512),
+                nn.ReLU(),
+                nn.Linear(512, n_states)
+            )
+        else:
+            self.block_decoder = nn.Linear(E, n_blocks)
+            # 状态标签预测层
+            self.state_decoder = nn.Linear(E, n_states)
+            
     def forward(self, emb):
         # 返回原始logits用于训练
         block_logits = self.block_decoder(emb)  # (B,X,Y,Z,n_blocks)
