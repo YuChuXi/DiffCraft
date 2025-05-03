@@ -19,17 +19,15 @@ class BlockEncoder(nn.Module):
         # 状态标签的嵌入层（所有状态共享）
         self.state_embed = nn.Embedding(n_states, embed_dim)
         
-    def forward(self, x):
-        # 拆分方块ID和状态标签
-        block_ids = x[..., 0].long()  # (B,X,Y,Z)
-        state_ids = x[..., 1:].long() # (B,X,Y,Z,max_n_state)
-        
+    def forward(self, block_ids, state_ids):
         # 方块ID嵌入
         block_emb = self.block_embed(block_ids)  # (B,X,Y,Z,E)
         
         # 状态嵌入处理
         state_weights = self.state_embed(state_ids)  # (B,X,Y,Z,max_n_state,E)
         mask = (state_ids != 0).unsqueeze(-1)       # (B,X,Y,Z,max_n_state,1)
+        if mask.sum() == 0:
+            mask[..., 0] = 1.0  # 如果没有状态标签，则将mask的第一个位置设置为1
         state_emb = (state_weights * mask).sum(dim=-2)  # (B,X,Y,Z,E)
         
         # 合并嵌入

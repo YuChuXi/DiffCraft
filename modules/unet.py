@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from config import Config
 
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
@@ -81,7 +82,7 @@ class AttentionBlock3D(nn.Module):
 class DenoiseNet3D(nn.Module):
     """3D去噪网络（修正维度版本）"""
 
-    def __init__(self, config):
+    def __init__(self, config:Config):
         super().__init__()
         self.config = config
 
@@ -104,14 +105,14 @@ class DenoiseNet3D(nn.Module):
         self.region_embed = SinusoidalPositionEmbeddings(config.model_channels)
         # 堆叠三个方向的MLP权重（input_dim, 3*output_dim）
         self.region_mlp = nn.Linear(config.model_channels, 3*config.model_channels)
-        self.region_proj = nn.Linear(config.model_channels, config.model_channels)
+        self.region_proj = nn.Linear(3*config.model_channels, config.model_channels)
         
         # 区域大小嵌入
         
 
         # 输入层 (B, C, X, Y, Z)
         self.input_conv = nn.Conv3d(
-            config.E, config.model_channels, kernel_size=3, padding=1
+            config.embed_dim, config.model_channels, kernel_size=3, padding=1
         )
 
         # 下采样路径
@@ -211,7 +212,7 @@ class DenoiseNet3D(nn.Module):
 
         # 输出层
         self.out_conv = nn.Conv3d(
-            config.model_channels, config.E, kernel_size=3, padding=1
+            config.model_channels, config.embed_dim, kernel_size=3, padding=1
         )
 
     def forward(self, x, timesteps, text_emb=None, original_shapes=None):
