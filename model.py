@@ -11,9 +11,9 @@ class DiffCraft(nn.Module):
         self.config = config
         # 初始化各个模块
         self.block_encoder = BlockEncoder(
-            config.n_blocks, config.n_states, config.N_STATE, config.E)
+            config.n_blocks, config.n_states, config.max_n_state, config.E)
         self.block_decoder = BlockDecoder(
-            config.n_blocks, config.n_states, config.N_STATE, config.E)
+            config.n_blocks, config.n_states, config.max_n_state, config.E)
         
         # VAE模块
         self.use_vae = config.use_vae
@@ -38,9 +38,12 @@ class DiffCraft(nn.Module):
         x_unpadded = x[:, :-pad[0], :-pad[1], :-pad[2], :] if any(pad) else x
         return x_unpadded
     
-    def forward(self, x, timesteps, text_emb=None):
+    def forward(self, x, timesteps, text_emb=None, skip_unet=False):
         # 1. 编码
         emb = self.block_encoder(x)  # (B,X,Y,Z,E)
+        
+        if skip_unet:
+            return self.block_decoder(emb)
         
         # 2. VAE编码（可选）
         if self.use_vae:
