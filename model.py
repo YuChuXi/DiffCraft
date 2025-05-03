@@ -99,7 +99,7 @@ class DiffCraft(nn.Module):
         x_noisy = sqrt_alpha_cumprod * x_start + sqrt_one_minus_alpha_cumprod * noise
         return x_noisy, noise
 
-    def compute_loss(self, x, t, text_emb=None):
+    def compute_loss(self, x, t, text_emb=None, skip_unet=False, keep_bse_vae=False):
         """计算三条路径的联合损失"""
         # 路径1: 体素重建路径
         # 从输入字典中获取各字段
@@ -109,38 +109,37 @@ class DiffCraft(nn.Module):
         mask = x["mask"]
 
         # 编码体素数据
-
         emb = self.block_encoder(block_ids, state_ids)
         block_logits, state_logits = self.block_decoder(emb)
-        print(
-            block_ids.shape,
-            state_ids.shape,
-            emb.shape,
-            block_logits.shape,
-            state_logits.shape,
-        )
-        # 应用mask过滤padding部分并计算损失
-        mask_expanded = mask.unsqueeze(-1)  # (B,X,Y,Z,1)
-        # recon_loss = F.mse_loss(x_pred[mask_expanded], voxel[mask_expanded])
-        # 应用mask过滤padding区域
-        mask_4d = mask.unsqueeze(1).expand_as(
-            block_logits.permute(0, 4, 1, 2, 3)
-        )  # (B,n_blocks,X,Y,Z)
-        masked_logits = block_logits.permute(0, 4, 1, 2, 3)[mask_4d].view(
-            -1, self.config.n_blocks
-        )
-        masked_target = block_ids.long()[mask].view(-1)
-        print(mask_4d.shape, masked_logits.shape, masked_target.shape)
-        block_loss = F.cross_entropy(
-            masked_logits,  # (N_valid_voxels, n_blocks)
-            masked_target,  # (N_valid_voxels,)
-        )
-        # 应用mask处理state loss
-        state_loss = block_state_loss(state_logits[mask], x["voxel"][..., 1:][mask])
+        # print(
+        #     block_ids.shape,
+        #     state_ids.shape,
+        #     emb.shape,
+        #     block_logits.shape,
+        #     state_logits.shape,
+        # ) # torch.Size([1, 325, 1, 329]) torch.Size([1, 325, 1, 329, 7]) torch.Size([1, 325, 1, 329, 64]) torch.Size([1, 325, 1, 329, 1535]) torch.Size([1, 325, 1, 329, 511])
+            
+        block_logits_flat = block_logits.view(-1, block_logits.shape[-1])  # (B*X*Y*Z, C)
+        block_ids_flat = block_ids.long().view(-1)                        # (B*X*Y*Z)
+        mask_flat = mask.view(-1)                                         # (B*X*Y*Z)
 
+        # 计算交叉熵损失
+        block_loss = F.cross_entropy(
+            block_logits_flat,
+            block_ids_flat,
+            reduction='none'
+        )
+
+        # 应用mask并计算加权损失
+        block_loss = (block_loss * mask_flat).sum() / mask.sum()
+        
         # 计算mask区域的准确率
         preds = block_logits.argmax(dim=-1)
         block_accuracy = (preds[mask] == block_ids[mask]).float().mean()
+        
+        # 应用mask处理state loss
+        state_loss = block_state_loss(state_logits[mask], x["voxel"][..., 1:][mask])
+
 
         # 路径2: VAE重建路径
         if self.use_vae:
@@ -149,6 +148,7 @@ class DiffCraft(nn.Module):
             pred_emb = self.vae_decoder(latent)
 
             # 带mask的重建损失
+            mask_expanded = mask.unsqueeze(-1)  # (B,X,Y,Z,1)
             recon_loss = F.mse_loss(pred_emb[mask_expanded], emb[mask_expanded])
 
             # 计算KL散度（按有效体素数量归一化）
@@ -175,16 +175,21 @@ class DiffCraft(nn.Module):
             vae_stats = {}
 
         # 路径3: 扩散去噪路径
-        if self.use_vae:
-            clean_latent = self.vae_encoder(emb.detach())
-        else:
-            clean_latent = emb.detach()
+        if not skip_unet:
+            if self.use_vae:
+                clean_latent = self.vae_encoder(emb)
+            else:
+                clean_latent = emb
+            if keep_bse_vae:
+                clean_latent.detach_()  # 保持BSE和VAE的计算图不变
 
-        noisy_latent, noise = self.add_noise(clean_latent, t)
-        pred_noise = self.denoise_net(
-            noisy_latent, t, text_emb=text_emb, original_shapes=original_shapes
-        )
-        denoise_loss = F.mse_loss(pred_noise, noise)
+            noisy_latent, noise = self.add_noise(clean_latent, t)
+            pred_noise = self.denoise_net(
+                noisy_latent, t, text_emb=text_emb, original_shapes=original_shapes
+            )
+            denoise_loss = F.mse_loss(pred_noise, noise)
+        else:
+            denoise_loss = torch.tensor(0.0, device=x["voxel"].device)
 
         loss_dict = {
             "total_loss": block_loss + state_loss + vae_loss + denoise_loss,

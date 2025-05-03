@@ -28,6 +28,7 @@ class BlockEncoder(nn.Module):
         mask = (state_ids != 0).unsqueeze(-1)       # (B,X,Y,Z,max_n_state,1)
         if mask.sum() == 0:
             mask[..., 0] = 1.0  # 如果没有状态标签，则将mask的第一个位置设置为1
+        print(state_weights.shape, mask.shape)
         state_emb = (state_weights * mask).sum(dim=-2)  # (B,X,Y,Z,E)
         
         # 合并嵌入

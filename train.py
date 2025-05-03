@@ -32,7 +32,7 @@ def train_step(config: Config, model: DiffCraft, batch, optimizer, device):
 
     # 前向传播并计算三条路径的联合损失
     loss_dict = model.compute_loss(
-        {"voxel": voxel, "original_shape": original_shapes, "mask": mask}, t
+        {"voxel": voxel, "original_shape": original_shapes, "mask": mask}, t, skip_unet=config.skip_unet, keep_bse_vae=config.keep_bse_vae
     )
 
     # 反向传播
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     dataset = LitematicaDataset()
     dataloader = DataLoader(
         dataset,
-        batch_size=4,  # 可以适当增大batch size
+        batch_size=2,  # 可以适当增大batch size
         shuffle=True,
         collate_fn=collate_fn,
     )
