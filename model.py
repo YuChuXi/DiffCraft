@@ -37,9 +37,11 @@ def block_state_loss(ns, n):
 
     # 计算二元交叉熵损失
     loss = F.binary_cross_entropy(ns, target)
+    # 计算准确率：预测值经过阈值处理并与目标比较
+    pred = (ns >= 0.5)  # 使用0.5作为阈值
+    accuracy = (pred == target).float().mean()  # 计算正确率
 
-    return loss
-
+    return loss, accuracy  # 返回损失和准确率
 
 class DiffCraft(nn.Module):
     def __init__(self, config):
@@ -142,7 +144,7 @@ class DiffCraft(nn.Module):
         block_accuracy = (preds[mask] == block_ids[mask]).float().mean()
         
         # 应用mask处理state loss
-        state_loss = block_state_loss(state_logits[mask], x["voxel"][..., 1:][mask])
+        state_loss, state_accuracy = block_state_loss(state_logits[mask], x["voxel"][..., 1:][mask])
 
 
         # 路径2: VAE重建路径
@@ -201,6 +203,7 @@ class DiffCraft(nn.Module):
             "block_loss": block_loss,
             "state_loss": state_loss,
             "block_accuracy": block_accuracy,
+            "state_accuracy": state_accuracy,
             "vae_loss": vae_loss,
             "denoise_loss": denoise_loss,
         }

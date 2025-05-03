@@ -22,7 +22,7 @@ class Config:
         self.model_channels = 64  # 模型通道数
         self.num_res_blocks = 2
         self.attention_resolutions = ()  # 应用注意力的分辨率
-        self.channel_mult = (1, 2, 2, 4)        # 各阶段通道倍增系数
+        self.channel_mult = (1, 2, 4, 8)        # 各阶段通道倍增系数
         self.num_heads = 4                   # 注意力头数
         self.text_emb_dim = 768               # 文本嵌入维度
         
