@@ -47,10 +47,10 @@ class DiffCraft(nn.Module):
         self.config = config
         # 初始化各个模块
         self.block_encoder = BlockEncoder(
-            config.n_blocks, config.n_states, config.max_n_state, config.embed_dim
+            config.n_blocks, config.n_states, config.embed_dim
         )
         self.block_decoder = BlockDecoder(
-            config.n_blocks, config.n_states, config.max_n_state, config.embed_dim
+            config.n_blocks, config.n_states, config.embed_dim
         )
 
         # VAE模块
@@ -92,10 +92,14 @@ class DiffCraft(nn.Module):
 
     def add_noise(self, x_start, t):
         """前向加噪过程"""
-        sqrt_alpha_cumprod = self.alphas_cumprod[t] ** 0.5
-        sqrt_one_minus_alpha_cumprod = (1 - self.alphas_cumprod[t]) ** 0.5
-
+        # 获取系数的累积乘积
+        sqrt_alpha_cumprod = (self.alphas_cumprod[t] ** 0.5).view(-1, 1, 1, 1, 1)
+        sqrt_one_minus_alpha_cumprod = ((1 - self.alphas_cumprod[t]) ** 0.5).view(-1, 1, 1, 1, 1)
+        
+        # 生成噪声
         noise = torch.randn_like(x_start)
+        
+        # 添加噪声
         x_noisy = sqrt_alpha_cumprod * x_start + sqrt_one_minus_alpha_cumprod * noise
         return x_noisy, noise
 
@@ -109,8 +113,8 @@ class DiffCraft(nn.Module):
         mask = x["mask"]
 
         # 编码体素数据
-        emb = self.block_encoder(block_ids, state_ids)
-        block_logits, state_logits = self.block_decoder(emb)
+        emb = self.block_encoder(block_ids, state_ids, mask)
+        block_logits, state_logits = self.block_decoder(emb, mask)
         # print(
         #     block_ids.shape,
         #     state_ids.shape,
@@ -144,7 +148,8 @@ class DiffCraft(nn.Module):
         # 路径2: VAE重建路径
         if self.use_vae:
             # VAE前向计算并获取KL散度
-            latent, mu, log_var = self.vae_encoder(emb)
+            latent = self.vae_encoder(emb)
+            mu, log_var = None, None # TODO
             pred_emb = self.vae_decoder(latent)
 
             # 带mask的重建损失
@@ -177,7 +182,7 @@ class DiffCraft(nn.Module):
         # 路径3: 扩散去噪路径
         if not skip_unet:
             if self.use_vae:
-                clean_latent = self.vae_encoder(emb)
+                clean_latent = latent
             else:
                 clean_latent = emb
             if keep_bse_vae:

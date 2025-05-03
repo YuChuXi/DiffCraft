@@ -19,10 +19,10 @@ class Config:
         self.beta_end = 0.02          # beta结束值
         
         # DenoiseNet3D 参数
-        self.model_channels = 32  # 模型通道数
+        self.model_channels = 64  # 模型通道数
         self.num_res_blocks = 2
         self.attention_resolutions = ()  # 应用注意力的分辨率
-        self.channel_mult = (1, 2, 2, 2)        # 各阶段通道倍增系数
+        self.channel_mult = (1, 2, 2, 4)        # 各阶段通道倍增系数
         self.num_heads = 4                   # 注意力头数
         self.text_emb_dim = 768               # 文本嵌入维度
         
@@ -34,3 +34,5 @@ class Config:
         self.weight_decay = 1e-5  # 权重衰减
         self.skip_unet = False
         self.keep_bse_vae = False
+        self.batch_size = 1  # 批大小(不建议大于1, 不同输入的padding会浪费显存)
+        self.grad_accumulation_steps = 16  # 梯度累积步数

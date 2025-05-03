@@ -32,13 +32,17 @@ def train_step(config: Config, model: DiffCraft, batch, optimizer, device):
 
     # 前向传播并计算三条路径的联合损失
     loss_dict = model.compute_loss(
-        {"voxel": voxel, "original_shape": original_shapes, "mask": mask}, t, skip_unet=config.skip_unet, keep_bse_vae=config.keep_bse_vae
+        {"voxel": voxel, "original_shape": original_shapes, "mask": mask},
+        t,
+        skip_unet=config.skip_unet,
+        keep_bse_vae=config.keep_bse_vae,
     )
 
-    # 反向传播
-    optimizer.zero_grad()
-    loss_dict["total_loss"].backward()
-    optimizer.step()
+    if optimizer is not None:
+        # 反向传播
+        optimizer.zero_grad()
+        loss_dict["total_loss"].backward()
+        optimizer.step()
 
     return {k: v.item() for k, v in loss_dict.items()}
 
@@ -91,7 +95,7 @@ if __name__ == "__main__":
     dataset = LitematicaDataset()
     dataloader = DataLoader(
         dataset,
-        batch_size=2,  # 可以适当增大batch size
+        batch_size=config.batch_size,  # 可以适当增大batch size
         shuffle=True,
         collate_fn=collate_fn,
     )
@@ -126,6 +130,7 @@ if __name__ == "__main__":
         name=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
     )
     # 训练循环
+    n_trained_step = 0
     for epoch in tqdm.trange(10000):
         for batch in dataloader:
             if config.lr_schedule == "cos":
@@ -149,14 +154,20 @@ if __name__ == "__main__":
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
 
-            loss_dict = train_step(config, model, batch, optimizer, device)
-            loss_dict.update(
-                    {
-                        "learning_rate": lr,
-                    }
-                )
-            wandb.log(
-                loss_dict
+            loss_dict = train_step(
+                config,
+                model,
+                batch,
+                optimizer if n_trained_step % config.grad_accumulation_steps else None,
+                device,
             )
+            n_trained_step += 1
+
+            loss_dict.update(
+                {
+                    "learning_rate": lr,
+                }
+            )
+            wandb.log(loss_dict)
 
     torch.save(model.state_dict(), "diffcraft.pth")
